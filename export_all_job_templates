@@ -1,0 +1,20 @@
+- name: Export all job templates
+  hosts: localhost
+  gather_facts: false
+  collections:
+    - ansible.controller
+
+  tasks:
+    - name: Export job templates
+      ansible.controller.export:
+        job_templates: all
+        controller_host: https://<aap-host>
+        controller_username: admin
+        controller_password: "{{ vault_aap_password }}"
+        validate_certs: false
+      register: export_result
+
+    - name: Save export to file
+      copy:
+        dest: aap_templates.yaml
+        content: "{{ export_result | to_nice_yaml }}"
