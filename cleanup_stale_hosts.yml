@@ -1,0 +1,102 @@
+Dry run
+ansible-playbook cleanup_stale_hosts.yml -e dry_run=false
+Actually delete
+ansible-playbook cleanup_stale_hosts.yml -e dry_run=false
+
+create token
+curl -k -X POST https://aap.example.com/api/v2/tokens/ \
+  -u "foouser:foopass" \
+  -H "Content-Type: application/json" \
+  -d '{"description": "API token for cleanup automation", "application": null}'
+
+
+---
+- name: Cleanup stale AAP hosts older than N days
+  hosts: localhost
+  gather_facts: false
+  vars:
+    aap_url: "https://aap.lnx.corp.lan"
+    token: "{{ lookup('env', 'AAP_TOKEN') }}"   # export AAP_TOKEN before running
+    cutoff_days: 90
+    dry_run: true                               # set false to actually delete
+    page_size: 200
+
+  vars_prompt:
+    - name: "confirm_delete"
+      prompt: "Dry run is {{ dry_run }}. Proceed?"
+      private: no
+      default: "yes"
+
+  tasks:
+    - name: Calculate cutoff date
+      ansible.builtin.command:
+        cmd: date -u -d "-{{ cutoff_days }} days" "+%Y-%m-%dT%H:%M:%SZ"
+      register: cutoff_date
+      changed_when: false
+
+    - name: Initialize pagination variables
+      set_fact:
+        next_url: "{{ aap_url }}/api/v2/host_metrics/?page_size={{ page_size }}"
+        stale_hosts: []
+
+    - name: Fetch all host metrics (handle pagination)
+      vars:
+        headers:
+          Authorization: "Bearer {{ token }}"
+      until: next_url is not none
+      retries: 50
+      delay: 1
+      block:
+        - name: Get one page of host metrics
+          uri:
+            url: "{{ next_url }}"
+            method: GET
+            headers: "{{ headers }}"
+            validate_certs: false
+            return_content: true
+          register: page
+
+        - name: Parse stale hosts in this page
+          set_fact:
+            stale_hosts: >-
+              {{ stale_hosts +
+                 (page.json.results | selectattr('last_automation', 'defined')
+                   | selectattr('last_automation', '<', cutoff_date.stdout)
+                   | list) }}
+
+        - name: Set next URL
+          set_fact:
+            next_url: >-
+              {% if page.json.next is defined and page.json.next %}
+              {{ aap_url ~ page.json.next if page.json.next.startswith('/') else page.json.next }}
+              {% else %}
+              {{ None }}
+              {% endif %}
+
+    - name: Show summary of stale hosts
+      debug:
+        msg: >-
+          Found {{ stale_hosts | length }} hosts older than {{ cutoff_days }} days.
+          (Dry-run mode: {{ dry_run }})
+
+    - name: Delete stale hosts (if dry_run == false)
+      when: not dry_run
+      vars:
+        headers:
+          Authorization: "Bearer {{ token }}"
+      loop: "{{ stale_hosts }}"
+      loop_control:
+        label: "{{ item.host_name }}"
+      uri:
+        url: "{{ aap_url }}/api/v2/host_metrics/{{ item.id }}/"
+        method: DELETE
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: [204, 404]
+      register: delete_result
+      ignore_errors: true
+
+    - name: Display deletion results
+      when: not dry_run
+      debug:
+        var: delete_result.results | map(attribute='status') | list
