@@ -1,0 +1,105 @@
+Set variables
+AAP_URL="https://aap.example.com"
+TOKEN="YOUR_AAP_TOKEN"
+DAYS=90
+
+
+CUTOFF_DATE=$(date -u -d "-${DAYS} days" +"%Y-%m-%dT%H:%M:%SZ")
+echo "Deleting hosts not automated since: $CUTOFF_DATE"
+
+
+Get all host metrics and filter stale hosts
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$AAP_URL/api/v2/host_metrics/?page_size=200" | \
+  jq -r --arg CUTOFF "$CUTOFF_DATE" '
+    .results[]
+    | select(.last_automation and .last_automation < $CUTOFF)
+    | "\(.id) \(.host_name) \(.last_automation)"'
+
+
+Loop through the stale hosts and delete
+
+#!/usr/bin/env bash
+#
+# Delete stale AAP hosts older than N days
+# Handles pagination, dry-run, and logging
+# Requirements: curl, jq, date (GNU)
+#
+
+set -euo pipefail
+
+# ======= Configuration =======
+AAP_URL="${AAP_URL:-https://aap.lnx.corp.lan}"
+TOKEN="${TOKEN:-}"        # export TOKEN=<your_bearer_token>
+DAYS="${DAYS:-90}"        # cutoff days
+LOG_FILE="${LOG_FILE:-/var/log/aap_stale_hosts.log}"
+DRY_RUN=true
+PAGE_SIZE=200
+
+# ======= Helper =======
+log() {
+  echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") | $*" | tee -a "$LOG_FILE"
+}
+
+# ======= Check token =======
+if [[ -z "$TOKEN" ]]; then
+  log "ERROR: Bearer token required (set TOKEN or export)"
+  exit 1
+fi
+
+# ======= Cutoff date =======
+CUTOFF_DATE=$(date -u -d "-${DAYS} days" +"%Y-%m-%dT%H:%M:%SZ")
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+
+log "Starting stale host cleanup (older than $DAYS days, cutoff: $CUTOFF_DATE)"
+log "AAP URL: $AAP_URL"
+log "Mode: $([[ "$DRY_RUN" == true ]] && echo "DRY-RUN" || echo "DELETE")"
+log "-----------------------------------------"
+
+NEXT_URL="$AAP_URL/api/v2/host_metrics/?page_size=$PAGE_SIZE"
+PAGE=1
+
+# ======= Fetch all host metrics =======
+while [[ -n "$NEXT_URL" && "$NEXT_URL" != "null" ]]; do
+  log "Fetching page $PAGE: $NEXT_URL"
+  RESPONSE=$(curl -sk -H "Authorization: Bearer $TOKEN" "$NEXT_URL")
+
+  # Collect stale hosts
+  echo "$RESPONSE" | jq -r --arg CUTOFF "$CUTOFF_DATE" '
+    .results[]
+    | select(.last_automation and .last_automation < $CUTOFF)
+    | [.id, .host_name, .last_automation]
+    | @tsv' >> "$TMPFILE"
+
+  NEXT_PATH=$(echo "$RESPONSE" | jq -r '.next')
+  if [[ "$NEXT_PATH" != "null" && -n "$NEXT_PATH" ]]; then
+    NEXT_URL="$AAP_URL$NEXT_PATH"
+  else
+    NEXT_URL=""
+  fi
+  PAGE=$((PAGE + 1))
+done
+
+# ======= Process stale hosts =======
+if [[ ! -s "$TMPFILE" ]]; then
+  log "✅ No stale hosts found."
+  exit 0
+fi
+
+log "-----------------------------------------"
+while IFS=$'\t' read -r id name last_auto; do
+  log "Found stale host: $name (ID $id, last automation $last_auto)"
+  if [[ "$DRY_RUN" == false ]]; then
+    RESPONSE=$(curl -sk -o /dev/null -w "%{http_code}" \
+      -X DELETE -H "Authorization: Bearer $TOKEN" \
+      "$AAP_URL/api/v2/host_metrics/$id/")
+    if [[ "$RESPONSE" == "204" ]]; then
+      log "✅ Deleted $name (ID $id)"
+    else
+      log "⚠️  Failed to delete $name (HTTP $RESPONSE)"
+    fi
+  fi
+done < "$TMPFILE"
+
+log "Cleanup complete."
