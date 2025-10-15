@@ -15,7 +15,7 @@ curl -k -X POST https://aap.example.com/api/v2/tokens/ \
   hosts: localhost
   gather_facts: false
   vars:
-    aap_url: "https://aap.lnx.corp.lan"
+    aap_url: "https://aap.example.com"
     token: "{{ lookup('env', 'AAP_TOKEN') }}"   # export AAP_TOKEN before running
     cutoff_days: 90
     dry_run: true                               # set false to actually delete
