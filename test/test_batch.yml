@@ -1,0 +1,47 @@
+---
+- name: === START batch {{ batch.name }} ===
+  ansible.builtin.debug:
+    msg: "Applying STIG section: {{ batch.name }} (tags={{ batch.tags | join(',') }})"
+
+- name: Record pre-change file state
+  ansible.builtin.shell: |
+    mkdir -p {{ backup_dir }}/{{ batch.name }}
+    find /etc -type f -mtime -0 -o -mtime +0 -print 2>/dev/null | \
+      tar -czf {{ backup_dir }}/{{ batch.name }}/etc-pre.tar.gz -T -
+  args:
+    warn: false
+  changed_when: false
+
+- name: Apply STIG section - {{ batch.name }}
+  ansible.builtin.include_role:
+    name: "{{ stig_repo }}"
+  vars:
+    rhel9stig_skip_tags: "never"
+  tags: "{{ batch.tags }}"
+  ignore_errors: true
+
+- name: Test systemctl --user after {{ batch.name }}
+  become_user: "{{ test_user }}"
+  ansible.builtin.shell: "systemctl --user list-units"
+  register: systemctl_result
+  ignore_errors: true
+
+- name: Report result for {{ batch.name }}
+  ansible.builtin.debug:
+    msg: >
+      Batch {{ batch.name }}:
+      {{ 'FAILED ❌' if systemctl_result.rc != 0 else 'OK ✅' }}
+      (stderr: {{ systemctl_result.stderr | default('') | trim }},
+       stdout: {{ systemctl_result.stdout | default('') | trim }})
+
+- name: Roll back system changes after {{ batch.name }}
+  ansible.builtin.shell: |
+    tar -xzf {{ backup_dir }}/{{ batch.name }}/etc-pre.tar.gz -C /
+  when: systemctl_result.rc != 0 or True
+  ignore_errors: true
+  args:
+    warn: false
+
+- name: === END batch {{ batch.name }} ===
+  ansible.builtin.debug:
+    msg: "Completed batch {{ batch.name }}"
