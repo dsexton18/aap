@@ -45,3 +45,6 @@
 - name: === END batch {{ batch.name }} ===
   ansible.builtin.debug:
     msg: "Completed batch {{ batch.name }}"
+
+
+ansible-playbook stig_test.yml -c local
