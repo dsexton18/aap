@@ -1,0 +1,26 @@
+---
+- name: Apply STIG section - {{ batch.name }}
+  ansible.builtin.include_role:
+    name: "{{ stig_repo }}"
+  vars:
+    rhel9stig_skip_tags: "never"
+  tags: "{{ batch.tags }}"
+  ignore_errors: true
+
+- name: Test systemctl --user after {{ batch.name }}
+  become_user: "{{ test_user }}"
+  ansible.builtin.shell: "systemctl --user list-units"
+  register: systemctl_result
+  ignore_errors: true
+
+- name: Show result for {{ batch.name }}
+  ansible.builtin.debug:
+    msg: >
+      Batch {{ batch.name }}:
+      {{ 'FAILED ❌' if systemctl_result.rc != 0 else 'OK ✅' }}
+      (stdout: {{ systemctl_result.stdout | default('') | trim }},
+       stderr: {{ systemctl_result.stderr | default('') | trim }})
+
+
+
+ansible-playbook stig_test.yml -c local
