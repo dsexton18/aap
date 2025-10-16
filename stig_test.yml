@@ -1,0 +1,29 @@
+---
+- name: Identify which STIG section breaks systemctl --user
+  hosts: localhost
+  become: true
+  vars:
+    stig_repo: /opt/RHEL9-STIG
+    test_user: "{{ ansible_user_id }}"
+    stig_batches:
+      - { name: "Accounts", tags: ["accounts"] }
+      - { name: "Auth", tags: ["auth"] }
+      - { name: "System", tags: ["system"] }
+      - { name: "Services", tags: ["service"] }
+      - { name: "Network", tags: ["network"] }
+      - { name: "Logging", tags: ["logging"] }
+      - { name: "Kernel", tags: ["sysctl"] }
+
+  tasks:
+    - name: Ensure STIG repo exists
+      git:
+        repo: "https://github.com/ansible-lockdown/RHEL9-STIG.git"
+        dest: "{{ stig_repo }}"
+        version: main
+      tags: always
+
+    - name: Loop through STIG batches
+      include_tasks: test_batch.yml
+      loop: "{{ stig_batches }}"
+      loop_control:
+        loop_var: batch
