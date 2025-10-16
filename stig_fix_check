@@ -1,0 +1,137 @@
+Here are some STIG requirements and corresponding role behaviors that align with what would break user-level systemd / D-Bus:
+
+STIG Control / Requirement	Effect / Reason	Where in the role / pointers	Likelihood / notes
+Disable user namespaces (i.e. set user.max_user_namespaces = 0)	Prevents unprivileged user namespaces, which may reduce ability for per-user services.	STIG “RHEL-09-213105” mandates user.max_user_namespaces = 0. 
+STIG VIEWER
+
+The ansible role may include a sysctl task enforcing this.	High — disabling user namespaces is a standard STIG item.
+Restrictive PAM changes or removal of pam_systemd.so	If the STIG role removes or fails to include session required pam_systemd.so, then systemd --user won’t get properly started by PAM	Look in tasks/ (or templates/) for PAM files like system-auth, password-auth, login, sshd
+Search within the role for strings like pam_systemd, pam_systemd.so, systemd-user	Moderate to high — PAM modifications are common in STIG hardening
+Mount /run/user or tmpfs restrictions	If /run/user is mounted with nosuid, nodev, or disallowed in config, user dbus socket or runtime directory may fail	Search for tasks that manage mounts or tmpfs configurations (e.g. in tasks or templates named fstab or tmpfs)	Moderate
+Disabling or restricting D-Bus user session or rules	The role may tighten or disable session D-Bus rules (e.g. in /etc/dbus-1)	Search for dbus in tasks or templates: dbus-1, session.conf	Lower probability, but possible
+Enabling “disruptive” CAT I / high-risk tasks	Some tasks considered disruptive may disable functionality	The role’s default behavior is to remediate non-disruptive items; disruptive ones are gated by rhel9stig_disruption_high = true (as noted in repo docs) 
+GitHub
++1
+	If the play run enabled high-disruption mode, extra tasks could have been applied
+
+
+
+
+Search for pam_systemd
+
+Use grep -R "pam_systemd" roles/RHEL9-STIG
+
+If there is a task templating PAM files (system-auth / password-auth / login / sshd) check whether pam_systemd.so is being removed or commented.
+
+Search for user.max_user_namespaces or sysctl entries
+
+grep -R "user.max_user_namespaces" -n roles/RHEL9-STIG
+
+Check in tasks for a sysctl role or template or in defaults or vars for that variable.
+
+Search for mount / tmpfs configuration of /run/user
+
+grep -R "/run/user" -n roles/RHEL9-STIG
+
+Or fstab/template tasks.
+
+Check role defaults (defaults/main.yml) and control gating
+
+In defaults/ inspect which controls are “enabled by default” vs which require enabling disruption.
+
+See if any variables relate to user sessions, PAM, or systemd_user.
+
+Look at “disruptive” tasks
+
+Some tasks are tagged disruptive (or “CAT I / high”). If your playbook has rhel9stig_disruption_high: true those tasks may be applied.
+
+Search for tags “disruptive”, “CAT I”, or “high” in tasks.
+
+
+
+The role enforces user.max_user_namespaces = 0 via sysctl. That is known STIG item. Disabling user namespaces is permitted in the STIG. 
+STIG VIEWER
+
+Combined with possibly missing or altered pam_systemd.so entries in PAM, or restrictive mounting of runtime directories, the user systemd bus fails to launch.
+
+If rhel9stig_disruption_high = true was set, extra tasks might have removed or hardened PAM entries further.
+
+To confirm:
+
+Check whether /etc/sysctl.d/* or /etc/sysctl.conf now contains user.max_user_namespaces = 0.
+
+Check whether PAM configs (e.g. /etc/pam.d/system-auth) still have session required pam_systemd.so.
+
+Audit the role-run logs / diff to see which tasks modified PAM / sysctl / mount entries.
+
+Run grep -R "pam_systemd" /etc to see if it's present or commented.
+
+Inspect logs of systemd user or journal for more clues (e.g. journalctl --user).
+
+
+
+
+
+
+pam_systemd.so removed or disabled in PAM configs
+
+Effect:
+Without the line
+
+
+
+in /etc/pam.d/system-auth, /etc/pam.d/password-auth, /etc/pam.d/login, or /etc/pam.d/sshd,
+the user’s systemd --user instance never starts — which means no user D-Bus socket exists, and you get:
+
+
+grep pam_systemd /etc/pam.d/*
+
+
+sudo sed -i '/^session.*pam_systemd.so/d' /etc/pam.d/system-auth
+echo 'session required pam_systemd.so' | sudo tee -a /etc/pam.d/system-auth
+
+
+sudo sysctl -w user.max_user_namespaces=15000
+
+
+
+loginctl show-user $USER | grep Linger
+mount | grep /run/user
+ls -ld /run/user/$(id -u)
+
+fix
+sudo loginctl enable-linger $USER
+sudo chmod 700 /run/user/$(id -u)
+
+
+If /run/user is mounted with nosuid, nodev, or disallowed in config, user dbus socket or runtime directory may fail
+
+Search for dbus in tasks or templates: dbus-1, session.conf 
+
+
+
+grep -R "max_user_namespaces" -n roles/RHEL9-STIG
+grep -R "pam_systemd" -n roles/RHEL9-STIG
+grep -R "pam_systemd.so" -n roles/RHEL9-STIG
+grep -R "loginctl" -n roles/RHEL9-STIG
+grep -R "linger" -n roles/RHEL9-STIG
+
+
+systemctl --user list-units --state=running
+
+
+
+ansible-playbook -i localhost, -c local site.yml \
+  -e "rhel9stig_skip_for_tests=true" \
+  -e "rhel9stig_disruption_high=false" \
+  -e "rhel9stig_audit_only=true"
+
+
+ansible-playbook -i localhost, -c local site.yml \
+  -e "rhel9stig_disruption_high=true"
+
+
+
+sudo sed -i '/^session.*pam_systemd.so/d' /etc/pam.d/system-auth
+echo 'session required pam_systemd.so' | sudo tee -a /etc/pam.d/system-auth
+
