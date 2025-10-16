@@ -24,3 +24,6 @@
 
 
 ansible-playbook stig_test.yml -c local
+
+You can then re-run only that section with --tags to inspect its exact tasks,
+ansible-playbook lockdown.yml --tags "sysctl"
